@@ -366,6 +366,25 @@
               <input id="showLiveTimer" type="checkbox" checked />
             </label>
           </div>
+
+          <div class="wideRow" id="diagnosticRow" style="grid-template-columns: 1fr; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line);">
+            <div style="font-weight: 800; color: var(--good); font-size: 13px; letter-spacing: 0.3px;">⏱ RUNTIME TIMER DIAGNOSTICS</div>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; margin-top: 6px;">
+              <div style="background: rgba(0,0,0,0.24); padding: 8px; border-radius: 10px; border: 1px solid var(--line);">
+                <div class="small" style="color: var(--muted); font-size: 10px;">1. Bell Chime (Wait)</div>
+                <div id="diagTimer1" style="font-family: monospace; font-size: 14px; font-weight: 800; margin-top: 3px; color: var(--muted);">0.000s</div>
+              </div>
+              <div style="background: rgba(0,0,0,0.24); padding: 8px; border-radius: 10px; border: 1px solid var(--line);">
+                <div class="small" style="color: var(--muted); font-size: 10px;">2. Lock-In Detection</div>
+                <div id="diagTimer2" style="font-family: monospace; font-size: 14px; font-weight: 800; margin-top: 3px; color: var(--muted);">0.000s</div>
+              </div>
+              <div style="background: rgba(0,0,0,0.24); padding: 8px; border-radius: 10px; border: 1px solid var(--line);">
+                <div class="small" style="color: var(--muted); font-size: 10px;">3. Continuous Total</div>
+                <div id="diagTimer3" style="font-family: monospace; font-size: 14px; font-weight: 800; margin-top: 3px; color: var(--muted);">0.000s</div>
+              </div>
+            </div>
+          </div>
+
           <div class="controls">
             <button id="btnInit" class="primary">Start camera + load models</button>
             <button id="btnCam" class="ghost" disabled>Switch to rear camera</button>
@@ -493,6 +512,9 @@
     replayVideo: document.getElementById('replayVideo'),
     replayTitle: document.getElementById('replayTitle'),
     leaderGradient: document.getElementById('leaderGradient'),
+    diagTimer1: document.getElementById('diagTimer1'),
+    diagTimer2: document.getElementById('diagTimer2'),
+    diagTimer3: document.getElementById('diagTimer3'),
   };
 
   const state = {
@@ -517,6 +539,9 @@
     meta: [],
     latestDetection: null,
     videoFrameSupported: false,
+    diagPlayPressedPerf: 0,
+    diagBellPerf: 0,
+    diagLockInPerf: 0,
   };
 
   function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
@@ -599,7 +624,7 @@
       const tx = db.transaction(STORE, 'readonly');
       const req = tx.objectStore(STORE).get(key);
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(tx.error);
     });
   }
 
@@ -821,25 +846,68 @@
     const enabled = !!els.showLiveTimer.checked;
     if (!enabled || state.round === 'idle') {
       els.liveTimer.classList.remove('show');
-      return;
+    } else {
+      let text = '';
+      if (state.round === 'waiting') {
+        const s = Math.max(0, (performance.now() - (state.waitingStartedPerf || performance.now())) / 1000);
+        text = `WAIT ${s.toFixed(1)}s`;
+      } else if (state.round === 'running') {
+        const s = Math.max(0, (performance.now() - state.bellPerf) / 1000);
+        text = `LIVE ${s.toFixed(2)}s`;
+      } else if (state.round === 'confirmed') {
+        const s = Math.max(0, (performance.now() - state.bellPerf) / 1000);
+        text = `DONE ${s.toFixed(2)}s`;
+      }
+      els.liveTimer.textContent = text;
+      els.liveTimer.classList.add('show');
     }
-    let text = '';
-    if (state.round === 'waiting') {
-      const s = Math.max(0, (performance.now() - (state.waitingStartedPerf || performance.now())) / 1000);
-      text = `WAIT ${s.toFixed(1)}s`;
-    } else if (state.round === 'running') {
-      const s = Math.max(0, (performance.now() - state.bellPerf) / 1000);
-      text = `LIVE ${s.toFixed(2)}s`;
-    } else if (state.round === 'confirmed') {
-      const s = Math.max(0, (performance.now() - state.bellPerf) / 1000);
-      text = `DONE ${s.toFixed(2)}s`;
+
+    // Diagnostic Panel rendering loop when Settings is active
+    if (els.settingsPanel.classList.contains('show')) {
+      const now = performance.now();
+      
+      // Timer 1: Delay before Chime
+      if (state.diagPlayPressedPerf > 0) {
+        if (state.diagBellPerf > 0) {
+          els.diagTimer1.textContent = ((state.diagBellPerf - state.diagPlayPressedPerf) / 1000).toFixed(3) + 's';
+          els.diagTimer1.style.color = 'var(--good)';
+        } else {
+          els.diagTimer1.textContent = ((now - state.diagPlayPressedPerf) / 1000).toFixed(3) + 's';
+          els.diagTimer1.style.color = '#ffb84d';
+        }
+      } else {
+        els.diagTimer1.textContent = '0.000s';
+        els.diagTimer1.style.color = 'var(--muted)';
+      }
+
+      // Timer 2: Camera Recognition Delay (Reaction Context)
+      if (state.diagBellPerf > 0) {
+        if (state.diagLockInPerf > 0) {
+          els.diagTimer2.textContent = ((state.diagLockInPerf - state.diagBellPerf) / 1000).toFixed(3) + 's';
+          els.diagTimer2.style.color = 'var(--good)';
+        } else {
+          els.diagTimer2.textContent = ((now - state.diagBellPerf) / 1000).toFixed(3) + 's';
+          els.diagTimer2.style.color = '#ffb84d';
+        }
+      } else {
+        els.diagTimer2.textContent = '0.000s';
+        els.diagTimer2.style.color = 'var(--muted)';
+      }
+
+      // Timer 3: Completely continuous clock, only resets when Play is hit again
+      if (state.diagPlayPressedPerf > 0) {
+        els.diagTimer3.textContent = ((now - state.diagPlayPressedPerf) / 1000).toFixed(3) + 's';
+        els.diagTimer3.style.color = state.diagLockInPerf > 0 ? 'var(--good)' : '#ffb84d';
+      } else {
+        els.diagTimer3.textContent = '0.000s';
+        els.diagTimer3.style.color = 'var(--muted)';
+      }
     }
-    els.liveTimer.textContent = text;
-    els.liveTimer.classList.add('show');
   }
 
   function liveLoop() {
-    if (state.round === 'idle') {
+    const settingsVisible = els.settingsPanel.classList.contains('show');
+    if (state.round === 'idle' && !settingsVisible) {
       els.liveTimer.classList.remove('show');
       state.liveRAF = 0;
       return;
@@ -858,6 +926,11 @@
     if (!state.stream) return setStatus('Camera needed', 'Start the camera first.');
     if (!state.audioBuffer) return setStatus('Audio needed', 'Load the bell + music file first.');
     if (state.round === 'waiting' || state.round === 'running') return;
+
+    // Reset Diagnostic milestones & capture Play Press point
+    state.diagPlayPressedPerf = performance.now();
+    state.diagBellPerf = 0;
+    state.diagLockInPerf = 0;
 
     state.currentRunId = `run_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
     state.currentSelectedId = state.currentRunId;
@@ -884,6 +957,10 @@
       setStatus('Timer live', 'Make the serious face now.');
       showOverlayText('LOCK IN!', '');
       const src = playAudioAndMarkStart();
+      
+      // Capture structural Bell timestamp synchronization
+      state.diagBellPerf = performance.now();
+      
       src.onended = () => {};
       detectLoop();
       startLiveLoop();
@@ -933,6 +1010,10 @@
 
   async function finishRound(firstPerf, sampleCount, validationMs) {
     if (state.round !== 'running') return;
+    
+    // Lock-In confirmed execution stamp captured locally
+    state.diagLockInPerf = performance.now();
+    
     state.round = 'confirmed';
     const reactionMs = Math.max(0, firstPerf - state.bellPerf);
     const reactionFrames = framesFromMs(reactionMs);
@@ -1049,314 +1130,4 @@
       node.querySelector('.entryDate').textContent = fmtDate(entry.createdAt);
 
       const thumb = node.querySelector('.thumb');
-      const btns = node.querySelector('.entryBtns');
-      thumb.textContent = 'Loading...';
-
-      const [goofy, lock] = await Promise.all([getAsset(entry.goofyAsset), getAsset(entry.lockAsset)]);
-      const goofyUrl = goofy ? URL.createObjectURL(goofy) : '';
-      const lockUrl = lock ? URL.createObjectURL(lock) : '';
-      const img = document.createElement('img');
-      let flip = true;
-      const paint = () => {
-        img.src = flip ? goofyUrl : lockUrl;
-        thumb.innerHTML = '';
-        thumb.appendChild(img);
-        flip = !flip;
-      };
-      paint();
-      state.thumbTimers.set(entry.id, setInterval(paint, 850));
-
-      const replayBtn = document.createElement('button');
-      replayBtn.textContent = 'Replay';
-      replayBtn.onclick = () => renderReplay(entry.id);
-      btns.appendChild(replayBtn);
-
-      const expBtn = document.createElement('button');
-      expBtn.textContent = 'Export video';
-      expBtn.onclick = async () => {
-        const blob = await getAsset(entry.videoAsset);
-        if (blob) downloadBlob(blob, `${entry.id}.webm`);
-      };
-      btns.appendChild(expBtn);
-
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.className = 'danger';
-      delBtn.onclick = () => removeEntry(entry.id);
-      btns.appendChild(delBtn);
-
-      node.onclick = (ev) => {
-        if (ev.target.tagName === 'BUTTON') return;
-        renderReplay(entry.id);
-      };
-      frag.appendChild(node);
-    }
-    els.leaderboard.appendChild(frag);
-  }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), entries: state.meta }, null, 2)], { type: 'application/json' });
-    downloadBlob(blob, 'leaderboard.json');
-  }
-
-  function buildLeaderboardHtml(entries) {
-    const rows = entries.map((e, i) => `
-      <tr>
-        <td>${i + 1}</td>
-        <td><img src="${e.goofyData || ''}" width="90"> <img src="${e.lockData || ''}" width="90"></td>
-        <td>${e.reactionMs} ms</td>
-        <td>${e.reactionFrames}</td>
-        <td>${fmtDate(e.createdAt)}</td>
-      </tr>`).join('');
-    return `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lock-In Leaderboard</title>
-<style>
-body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:24px;background:#0f1220;color:#eef1ff}
-table{width:100%;border-collapse:collapse}
-td,th{border:1px solid #2c355f;padding:10px;vertical-align:top}
-th{background:#1c2240}
-img{border-radius:8px;vertical-align:middle;margin-right:6px}
-</style></head>
-<body>
-<h1>Lock-In Leaderboard</h1>
-<p>Exported: ${new Date().toLocaleString()}</p>
-<table>
-<thead><tr><th>#</th><th>Snapshots</th><th>Time</th><th>Frames</th><th>Timestamp</th></tr></thead>
-<tbody>${rows}</tbody>
-</table>
-</body></html>`;
-  }
-
-  async function blobToDataURL(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function exportHtml() {
-    const htmlEntries = [];
-    for (const entry of state.meta) {
-      const [goofyBlob, lockBlob] = await Promise.all([getAsset(entry.goofyAsset), getAsset(entry.lockAsset)]);
-      htmlEntries.push({
-        ...entry,
-        goofyData: goofyBlob ? await blobToDataURL(goofyBlob) : '',
-        lockData: lockBlob ? await blobToDataURL(lockBlob) : '',
-      });
-    }
-    const blob = new Blob([buildLeaderboardHtml(htmlEntries)], { type: 'text/html' });
-    downloadBlob(blob, 'leaderboard.html');
-  }
-
-  async function blobToImage(blob) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(blob);
-      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-      img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
-      img.src = url;
-    });
-  }
-
-  async function makePreviewGif(goofyBlob, lockBlob) {
-    const goofyImg = await blobToImage(goofyBlob);
-    const lockImg = await blobToImage(lockBlob);
-    const width = Math.max(240, goofyImg.naturalWidth || goofyImg.width, lockImg.naturalWidth || lockImg.width);
-    const height = Math.max(240, goofyImg.naturalHeight || goofyImg.height, lockImg.naturalHeight || lockImg.height);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-
-    const renderFrame = (img) => {
-      ctx.clearRect(0, 0, width, height);
-      const scale = Math.min(width / img.naturalWidth, height / img.naturalHeight);
-      const drawW = img.naturalWidth * scale;
-      const drawH = img.naturalHeight * scale;
-      const dx = (width - drawW) / 2;
-      const dy = (height - drawH) / 2;
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, dx, dy, drawW, drawH);
-    };
-
-    const gif = new GIF({
-      workers: 2,
-      quality: 10,
-      repeat: 0,
-      workerScript: 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js'
-    });
-
-    const sequence = [goofyImg, lockImg, goofyImg, lockImg, goofyImg, lockImg];
-    for (const img of sequence) {
-      renderFrame(img);
-      gif.addFrame(canvas, { copy: true, delay: 250 });
-    }
-
-    return new Promise((resolve, reject) => {
-      gif.on('finished', resolve);
-      gif.on('abort', reject);
-      gif.render();
-    });
-  }
-
-  async function exportSessionZip() {
-    const sorted = [...state.meta].sort((a, b) => a.reactionMs - b.reactionMs || a.reactionFrames - b.reactionFrames || a.createdAt - b.createdAt);
-    const zip = new JSZip();
-    const sessionName = `Session_${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')}`;
-    const root = zip.folder(sessionName);
-    const runsFolder = root.folder('runs');
-
-    const exportMeta = [];
-    for (let i = 0; i < sorted.length; i++) {
-      const entry = sorted[i];
-      const rank = String(i + 1).padStart(2, '0');
-      const folderName = `${rank}_${entry.reactionMs}ms`;
-      const runFolder = runsFolder.folder(folderName);
-      const [videoBlob, goofyBlob, lockBlob] = await Promise.all([
-        getAsset(entry.videoAsset),
-        getAsset(entry.goofyAsset),
-        getAsset(entry.lockAsset)
-      ]);
-
-      if (videoBlob) runFolder.file('video.webm', videoBlob);
-      if (goofyBlob && lockBlob) {
-        const gifBlob = await makePreviewGif(goofyBlob, lockBlob);
-        runFolder.file('preview.gif', gifBlob);
-      }
-      runFolder.file('details.json', JSON.stringify({
-        rank: i + 1,
-        id: entry.id,
-        label: entry.label || '',
-        reactionMs: entry.reactionMs,
-        reactionFrames: entry.reactionFrames,
-        createdAt: entry.createdAt,
-        validationMs: entry.validationMs,
-        sampleCount: entry.sampleCount
-      }, null, 2));
-
-      exportMeta.push({ ...entry, rank: i + 1, folderName });
-    }
-
-    root.file('leaderboard.json', JSON.stringify({ exportedAt: new Date().toISOString(), entries: exportMeta }, null, 2));
-    const htmlEntries = [];
-    for (const entry of exportMeta) {
-      const [goofyBlob, lockBlob] = await Promise.all([getAsset(entry.goofyAsset), getAsset(entry.lockAsset)]);
-      htmlEntries.push({
-        ...entry,
-        goofyData: goofyBlob ? await blobToDataURL(goofyBlob) : '',
-        lockData: lockBlob ? await blobToDataURL(lockBlob) : '',
-      });
-    }
-    root.file('leaderboard.html', buildLeaderboardHtml(htmlEntries));
-
-    const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-    downloadBlob(out, `${sessionName}.zip`);
-  }
-
-  async function exportAllVideos() {
-    for (const e of state.meta) {
-      const blob = await getAsset(e.videoAsset);
-      if (blob) downloadBlob(blob, `${e.id}.webm`);
-      await new Promise(r => setTimeout(r, 300));
-    }
-  }
-
-  async function clearSession() {
-    if (!confirm('Delete all runs and assets?')) return;
-    for (const e of state.meta) {
-      await Promise.all([delAsset(e.goofyAsset), delAsset(e.lockAsset), delAsset(e.videoAsset)]);
-    }
-    state.meta = [];
-    saveMeta();
-    updateCount();
-    setGradient();
-    els.leaderboard.innerHTML = '<div class="small">No runs yet.</div>';
-    els.replayVideo.removeAttribute('src');
-    els.replayVideo.load();
-    els.replayTitle.textContent = 'None selected';
-  }
-
-  function openSettingsToggle() {
-    els.settingsPanel.classList.toggle('show');
-  }
-
-  async function init() {
-    loadMeta();
-    updateCount();
-    setGradient();
-    if (state.meta.length) renderLeaderboard();
-    else els.leaderboard.innerHTML = '<div class="small">No runs yet.</div>';
-    await loadModels();
-    setStatus('Idle', 'Load the camera and audio first.');
-    updateLiveTimer();
-  }
-
-  els.btnSettings.addEventListener('click', () => {
-    openSettingsToggle();
-    updateLiveTimer();
-  });
-  els.btnInit.addEventListener('click', async () => {
-    els.btnInit.disabled = true;
-    try {
-      await loadModels();
-      await startCamera();
-      els.btnRound.disabled = !(state.modelsLoaded && state.audioBuffer);
-    } finally {
-      els.btnInit.disabled = false;
-    }
-  });
-  els.btnRound.addEventListener('click', async () => {
-    await startRound();
-  });
-  els.btnCam.addEventListener('click', async () => {
-    state.facingMode = state.facingMode === 'user' ? 'environment' : 'user';
-    els.btnCam.textContent = state.facingMode === 'user' ? 'Switch to rear camera' : 'Switch to front camera';
-    await startCamera();
-  });
-  els.btnStop.addEventListener('click', () => {
-    stopTimers();
-    stopRecorder();
-    stopCamera();
-    state.round = 'idle';
-    setCameraPulse(false);
-    hideOverlayText();
-    els.btnRound.classList.remove('fadeOut');
-    els.btnRound.style.visibility = 'visible';
-    els.btnRound.disabled = !(state.modelsLoaded && state.stream && state.audioBuffer);
-    setStatus('Camera stopped', 'You can start it again whenever you want.');
-    updateLiveTimer();
-  });
-  els.audioFile.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (file) await loadAudioFile(file);
-  });
-  els.showLiveTimer.addEventListener('change', updateLiveTimer);
-  els.btnExportJson.addEventListener('click', exportJson);
-  els.btnExportHtml.addEventListener('click', exportHtml);
-  els.btnExportSession.addEventListener('click', exportSessionZip);
-  els.btnExportAllVideos.addEventListener('click', exportAllVideos);
-  els.btnClear.addEventListener('click', clearSession);
-  els.btnReplaySlow.addEventListener('click', () => { els.replayVideo.playbackRate = 0.25; els.replayVideo.play().catch(() => {}); });
-  els.btnReplayNormal.addEventListener('click', () => { els.replayVideo.playbackRate = 1; els.replayVideo.play().catch(() => {}); });
-  els.btnExportSelectedVideo.addEventListener('click', async () => {
-    if (!state.currentSelectedId) return;
-    const entry = state.meta.find(x => x.id === state.currentSelectedId);
-    if (!entry) return;
-    const blob = await getAsset(entry.videoAsset);
-    if (blob) downloadBlob(blob, `${entry.id}.webm`);
-  });
-  els.btnHideReplay.addEventListener('click', () => {
-    els.replayVideo.removeAttribute('src');
-    els.replayVideo.load();
-    els.replayTitle.textContent = 'None selected';
-    state.currentSelectedId = null;
-  });
-
-  init();
-})();
-</script>
-</body>
-</html>
+      const btns = node
